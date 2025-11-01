@@ -70,7 +70,7 @@ Use this as a repeatable runbook for deploying the Prospect Pipeline backend (or
      --platform managed \
      --region us-central1 \
      --allow-unauthenticated \
-     --set-env-vars "DEFAULT_QUEUE_LIST_ID=enrichment_queue,OUTREACH_READY_LIST_ID=outreach_ready"
+     --set-env-vars "DEFAULT_QUEUE_LIST_ID=enrichment_queue,OUTREACH_READY_LIST_ID=outreach_ready,CORS_ALLOWED_ORIGINS=https://app.example.com"
    ```
 
    - Replace the env var values with the ones appropriate for the environment.
@@ -90,7 +90,7 @@ Use this as a repeatable runbook for deploying the Prospect Pipeline backend (or
 
 - **Health endpoint**: `curl https://<SERVICE_URL>/healthz` should return `{"status":"ok",...}`.
 
-- **CORS**: The backend sends `Access-Control-Allow-Origin: *` by default via Express/CORS middleware.
+- **CORS**: The backend now reads `CORS_ALLOWED_ORIGINS`; confirm your frontend origin appears in the response headers.
 
 ## Common troubleshooting
 

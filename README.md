@@ -145,7 +145,8 @@ The service is ready for Cloud Run / App Engine:
      --region <REGION> \
      --allow-unauthenticated \
      --set-env-vars "DEFAULT_QUEUE_LIST_ID=..." \
-     --set-env-vars "OUTREACH_READY_LIST_ID=..."
+     --set-env-vars "OUTREACH_READY_LIST_ID=..." \
+     --set-env-vars "CORS_ALLOWED_ORIGINS=https://your-frontend-domain"
    ```
 3. Credentials:
    * Attach a service account with Firestore access to the Cloud Run service. The container uses
