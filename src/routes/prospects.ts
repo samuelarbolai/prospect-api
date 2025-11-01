@@ -29,58 +29,144 @@ const listSchema = z.object({
   search: z.string().optional().default(""),
 });
 
-router.get("/prospects", async (req, res) => {
-  const parsed = listSchema.safeParse(req.query);
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() });
-  }
-  const { pageSize, pageToken, listIds, priorities, statuses, search } = parsed.data;
+interface ProspectDoc extends Record<string, unknown> {
+  id: string;
+  priority_bucket?: unknown;
+  list_ids?: unknown;
+  enrichment?: Record<string, unknown> | null;
+  name?: unknown;
+  organization?: unknown;
+  role_title?: unknown;
+}
 
-  let queryRef: FirebaseFirestore.Query<FirebaseFirestore.DocumentData> = db.collection("prospects");
-
-  if (listIds.length > 0) {
-    queryRef = queryRef.where("list_ids", "array-contains-any", listIds);
-  }
-  if (priorities.length > 0) {
-    queryRef = queryRef.where("priority_bucket", "in", priorities);
-  }
-  if (statuses.length > 0) {
-    queryRef = queryRef.where("enrichment.status", "in", statuses);
-  }
-  queryRef = queryRef.orderBy("name").limit(pageSize);
-  if (pageToken) {
-    try {
-      const snapshot = await db.collection("prospects").doc(pageToken).get();
-      if (snapshot.exists) {
-        queryRef = queryRef.startAfter(snapshot);
-      }
-    } catch (err) {
-      console.error("Invalid pageToken", err);
+router.get("/prospects", async (req, res, next) => {
+  try {
+    const parsed = listSchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
     }
+    const { pageSize, pageToken, listIds, priorities, statuses, search } = parsed.data;
+
+    let queryRef: FirebaseFirestore.Query<FirebaseFirestore.DocumentData> = db.collection("prospects");
+    if (listIds.length > 10) {
+      return res.status(400).json({ error: "A maximum of 10 list filters is supported." });
+    }
+
+    let appliedAdvancedFilter = false;
+    if (listIds.length > 0) {
+      queryRef = queryRef.where("list_ids", "array-contains-any", listIds);
+      appliedAdvancedFilter = true;
+    }
+
+    const applyPrioritiesInMemory = priorities.length > 0;
+    const priorityFilter = new Set(priorities);
+
+    const applyStatusesInMemory = statuses.length > 0;
+    const statusFilter = new Set(statuses);
+
+    const searchTerm = search.trim().toLowerCase();
+
+    queryRef = queryRef.orderBy("name");
+    let currentCursor: FirebaseFirestore.DocumentSnapshot<FirebaseFirestore.DocumentData> | null = null;
+
+    if (pageToken) {
+      try {
+        const snapshot = await db.collection("prospects").doc(pageToken).get();
+        if (snapshot.exists) {
+          currentCursor = snapshot;
+        }
+      } catch (err) {
+        console.error("Invalid pageToken", err);
+      }
+    }
+
+    const matches: ProspectDoc[] = [];
+    let lastReturnedDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+
+    const fetchMultiplier = applyPrioritiesInMemory || applyStatusesInMemory || searchTerm ? 5 : appliedAdvancedFilter ? 3 : 2;
+    const fetchLimit = Math.min(pageSize * fetchMultiplier, MAX_PAGE_SIZE);
+    let safetyCounter = 0;
+    const maxIterations = 10;
+
+    while (matches.length < pageSize && safetyCounter < maxIterations) {
+      let queryToRun = queryRef;
+      if (currentCursor) {
+        queryToRun = queryToRun.startAfter(currentCursor);
+      }
+
+      const snapshot = await queryToRun.limit(fetchLimit).get();
+      if (snapshot.empty) {
+        currentCursor = null;
+        break;
+      }
+
+      for (const doc of snapshot.docs) {
+        const row = {
+          id: doc.id,
+          ...(doc.data() as Record<string, unknown>),
+        } as ProspectDoc;
+
+        if (applyPrioritiesInMemory) {
+          const bucket = typeof row.priority_bucket === "string" ? row.priority_bucket : "";
+          if (!priorityFilter.has(bucket)) {
+            continue;
+          }
+        }
+
+        if (applyStatusesInMemory) {
+          const enrichment = row.enrichment ?? null;
+          const statusValue =
+            enrichment && typeof enrichment === "object" && enrichment !== null
+              ? enrichment.status
+              : undefined;
+          const status = typeof statusValue === "string" ? statusValue : "";
+          if (!statuses.includes(status)) {
+            continue;
+          }
+        }
+
+        if (searchTerm) {
+          const haystack = [row.name, row.organization, row.role_title]
+            .map((value) => (typeof value === "string" ? value.toLowerCase() : ""))
+            .some((value) => value.includes(searchTerm));
+          if (!haystack) {
+            continue;
+          }
+        }
+
+        matches.push(row);
+        lastReturnedDoc = doc;
+
+        if (matches.length === pageSize) {
+          break;
+        }
+      }
+
+      safetyCounter += 1;
+
+      if (matches.length === pageSize) {
+        currentCursor = lastReturnedDoc;
+        break;
+      }
+
+      if (snapshot.size < fetchLimit) {
+        currentCursor = null;
+        break;
+      }
+
+      currentCursor = snapshot.docs[snapshot.docs.length - 1];
+    }
+
+    const nextPageToken = matches.length === pageSize && lastReturnedDoc ? lastReturnedDoc.id : undefined;
+
+    res.json({
+      data: matches,
+      nextPageToken,
+    });
+  } catch (err) {
+    console.error("Failed to load prospects", err);
+    next(err);
   }
-
-  const snapshot = await queryRef.get();
-  let rows = snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...(doc.data() as Record<string, unknown>),
-  }));
-
-  const searchTerm = search.trim().toLowerCase();
-  if (searchTerm) {
-    rows = rows.filter((row) =>
-      ["name", "organization", "role_title"]
-        .map((key) => (row as Record<string, unknown>)[key])
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(searchTerm)),
-    );
-  }
-
-  const nextPageToken = snapshot.docs.length === pageSize ? snapshot.docs[snapshot.docs.length - 1].id : undefined;
-
-  res.json({
-    data: rows,
-    nextPageToken,
-  });
 });
 
 router.get("/list-options", async (_req, res) => {
