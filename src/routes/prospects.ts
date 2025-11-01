@@ -165,7 +165,11 @@ router.get("/prospects", async (req, res, next) => {
     });
   } catch (err) {
     console.error("Failed to load prospects", err);
-    next(err);
+    const message =
+      err && typeof err === "object" && "message" in err && typeof (err as { message: unknown }).message === "string"
+        ? (err as { message: string }).message
+        : "Failed to load prospects.";
+    res.status(500).json({ error: message });
   }
 });
 
